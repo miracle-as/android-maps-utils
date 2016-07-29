@@ -27,6 +27,8 @@ import com.google.maps.android.MarkerManager;
 import com.google.maps.android.clustering.algo.Algorithm;
 import com.google.maps.android.clustering.algo.NonHierarchicalDistanceBasedAlgorithm;
 import com.google.maps.android.clustering.algo.PreCachingAlgorithmDecorator;
+import com.google.maps.android.clustering.algo.ScreenBasedAlgorithm;
+import com.google.maps.android.clustering.algo.ScreenBasedAlgorithmAdapter;
 import com.google.maps.android.clustering.view.ClusterRenderer;
 import com.google.maps.android.clustering.view.DefaultClusterRenderer;
 
@@ -41,12 +43,14 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * ClusterManager should be added to the map as an: <ul> <li>{@link com.google.android.gms.maps.GoogleMap.OnCameraChangeListener}</li>
  * <li>{@link com.google.android.gms.maps.GoogleMap.OnMarkerClickListener}</li> </ul>
  */
-public class ClusterManager<T extends ClusterItem> implements GoogleMap.OnCameraChangeListener, GoogleMap.OnMarkerClickListener, GoogleMap.OnInfoWindowClickListener {
+public class ClusterManager<T extends ClusterItem> implements GoogleMap.OnCameraChangeListener,
+        GoogleMap.OnMarkerClickListener, GoogleMap.OnInfoWindowClickListener {
+
     private final MarkerManager mMarkerManager;
     private final MarkerManager.Collection mMarkers;
     private final MarkerManager.Collection mClusterMarkers;
 
-    private Algorithm<T> mAlgorithm;
+    private ScreenBasedAlgorithm<T> mAlgorithm;
     private final ReadWriteLock mAlgorithmLock = new ReentrantReadWriteLock();
     private ClusterRenderer<T> mRenderer;
 
@@ -70,7 +74,9 @@ public class ClusterManager<T extends ClusterItem> implements GoogleMap.OnCamera
         mClusterMarkers = markerManager.newCollection();
         mMarkers = markerManager.newCollection();
         mRenderer = new DefaultClusterRenderer<T>(context, map, this);
-        mAlgorithm = new PreCachingAlgorithmDecorator<T>(new NonHierarchicalDistanceBasedAlgorithm<T>());
+        mAlgorithm = new ScreenBasedAlgorithmAdapter<T>(new PreCachingAlgorithmDecorator<T>(
+                new NonHierarchicalDistanceBasedAlgorithm<T>()));
+
         mClusterTask = new ClusterTask();
         mRenderer.onAdd();
     }
@@ -103,15 +109,25 @@ public class ClusterManager<T extends ClusterItem> implements GoogleMap.OnCamera
     }
 
     public void setAlgorithm(Algorithm<T> algorithm) {
+        setAlgorithm(new ScreenBasedAlgorithmAdapter<T>(algorithm));
+    }
+
+    public void setAlgorithm(ScreenBasedAlgorithm<T> algorithm) {
         mAlgorithmLock.writeLock().lock();
         try {
             if (mAlgorithm != null) {
                 algorithm.addItems(mAlgorithm.getItems());
             }
-            mAlgorithm = new PreCachingAlgorithmDecorator<T>(algorithm);
+
+            mAlgorithm = algorithm;
         } finally {
             mAlgorithmLock.writeLock().unlock();
         }
+
+        if (mAlgorithm.shouldReclusterOnMapMovement()) {
+            mAlgorithm.onCameraChange(mMap.getCameraPosition());
+        }
+
         cluster();
     }
 
@@ -182,14 +198,17 @@ public class ClusterManager<T extends ClusterItem> implements GoogleMap.OnCamera
             ((GoogleMap.OnCameraChangeListener) mRenderer).onCameraChange(cameraPosition);
         }
 
-        // Don't re-compute clusters if the map has just been panned/tilted/rotated.
-        CameraPosition position = mMap.getCameraPosition();
-        if (mPreviousCameraPosition != null && mPreviousCameraPosition.zoom == position.zoom) {
-            return;
-        }
-        mPreviousCameraPosition = mMap.getCameraPosition();
+        mAlgorithm.onCameraChange(cameraPosition);
 
-        cluster();
+        // delegate clustering to the algorithm
+        if (mAlgorithm.shouldReclusterOnMapMovement()) {
+            cluster();
+
+        // Don't re-compute clusters if the map has just been panned/tilted/rotated.
+        } else if (mPreviousCameraPosition == null || mPreviousCameraPosition.zoom != cameraPosition.zoom) {
+            mPreviousCameraPosition = mMap.getCameraPosition();
+            cluster();
+        }
     }
 
     @Override
