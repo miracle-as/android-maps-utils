@@ -1,6 +1,9 @@
 buildscript {
     repositories {
         jcenter()
+        maven {
+            url "http://localhost:8081/nexus/content/groups/public"
+        }
     }
 
     dependencies {
